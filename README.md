@@ -1,4 +1,4 @@
-# SaveTokens
+# Codex Auto Effort
 
 **为 Codex 桌面端按任务选择推理强度的本地实验性控制程序。**
 
@@ -6,7 +6,7 @@
 
 简单请求使用较低档位，复杂任务提高档位；支持手动固定和随时关闭。纯 Python 标准库，无第三方运行依赖。
 
-> 独立社区项目，与 OpenAI 无隶属或背书关系。名称表达减少不必要推理开销的目标；目前没有 token、费用或回答质量的对照实验，不承诺节省比例。仅发布本项目的包装程序，不包含桌面应用、原版 CLI、账户或模型访问权限。
+> 独立社区项目，与 OpenAI 无隶属或背书关系。目前没有 token、费用或回答质量的对照实验，不承诺节省比例。仅发布本项目的包装程序，不包含桌面应用、原版 CLI、账户或模型访问权限。
 
 ## 工作方式
 
@@ -18,18 +18,20 @@
 
 “继续”沿用本进程记录或服务端恢复的上一档位。独立的新需求重新判断。重启恢复时只有上次档位，没有自动获得整个对话语义。规则有可能高估或低估任务，应用内手动改档或 `pin` 可覆盖。
 
-仅处理已通过 `model/list` 确认可用档位的 GPT-6 Astra 请求。其他模型、工具结果、正在运行的轮次内追加消息、队列启动、未知模型目录或协议错误保持原请求。并非在一次生成的内部实时变档。其他模型以及权限、工具、消息内容、审批请求和响应均不修改。
+新安装默认对 `model/list` 已公布且支持已知档位的模型生效，不限定模型名称，也不会切换模型。自动档位取“不超过规则目标和 ceiling 的最高可用档位”；例如规则要求 xhigh、模型最高支持 high，就使用 high。若没有合适档位，保持原请求。用户明确指定或固定的档位不会被替换成其他档位。
+
+工具结果、正在运行的轮次内追加消息、队列启动、未知模型目录、未知协议结构保持原请求。并非在一次生成的内部实时变档。权限、工具、消息内容、审批字段和响应均不修改。
 
 计划模式的 `collaborationMode.settings.reasoning_effort` 优先于顶层 effort，因此两处同步填写，保留其余设置。手动修改会话档位成功后会保存该会话的固定档位，避免与用户争抢。重复同步相同档位不会固定。
 
 ## 安装
 
-需要 macOS、Python 3.9+ 和已安装且已登录的兼容桌面应用。当前路由默认只处理服务端目录中可用的 `gpt-6-astra`；其他模型原样透传。若你的账号没有该模型，本项目不会自动改档。Windows 不支持此安装方式，Linux 仅可运行离线测试。
+需要 macOS、Python 3.9+ 和已安装且已登录的兼容桌面应用。Windows 不支持此实现（依赖 Unix 管道和文件锁）；Linux 可运行协议包装和离线测试，但本项目没有 Linux 桌面启动安装器。
 
 
 ```sh
-git clone https://github.com/mixx993/savetokens.git
-cd savetokens
+git clone https://github.com/mixx993/codex-auto-effort.git
+cd codex-auto-effort
 python3 install.py install
 ```
 
@@ -39,7 +41,7 @@ python3 install.py install
 python3 install.py install --cli "/path/to/Codex.app/Contents/Resources/codex"
 ```
 
-这里只是路径查找支持，不代表所有同名应用版本都兼容。安装后启动脚本使用此次安装的 Python 解释器；请保留该解释器，避免使用临时虚拟环境。安装器会保存原启动环境，遇到已有自定义 CLI 入口时停止。
+这里只是路径查找支持，不代表所有同名应用版本都兼容。安装后启动脚本使用此次安装的 Python 解释器；请保留该解释器，避免使用临时虚拟环境。安装器会保存原启动环境，遇到已有其他自定义 CLI 入口时停止。普通安装错误会回滚文件、登录服务和启动环境；若回滚也失败，会明确报告。断电或强制杀进程不在回滚保证范围内。
 
 安装位置 `~/.codex/effort-controller/`。安装器设置当前用户 LaunchServices 启动环境中的 `CODEX_CLI_PATH` 与 `CODEX_APP_SERVER_FORCE_CLI`，并用 `~/Library/LaunchAgents/local.codex.effort-environment.plist` 在登录时恢复。原应用包和全局 `config.toml` 不改动。
 
@@ -58,9 +60,13 @@ python3 install.py install --cli "/path/to/Codex.app/Contents/Resources/codex"
 ~/.codex/effort-controller/codex-effort auto 会话ID
 ~/.codex/effort-controller/codex-effort auto all
 ~/.codex/effort-controller/codex-effort ceiling xhigh
+~/.codex/effort-controller/codex-effort model '*'  # 所有目录中兼容模型
+~/.codex/effort-controller/codex-effort model MODEL_ID  # 仅这个模型
 ```
 
-开关和固定档位在下一次新一轮消息读取，无需再次重启。关闭后当前聊天保留最后已设置的档位；不会偷偷恢复另一个档位。直接在提示词单独一行写“推理强度设为high”也可以指定本轮档位。
+模型筛选、开关和固定档位在下一次新一轮消息读取，无需再次重启。关闭后当前聊天保留最后已设置的档位；不会偷偷恢复另一个档位。直接在提示词单独一行写“推理强度设为high”也可以指定本轮档位。
+
+从旧版本升级时保留已有的精确模型筛选、开关和固定档位。若希望开启通用模型支持，执行上面的 `model '*'`。安装目录、`codex-effort` 命令及 LaunchAgent 名称为兼容旧安装而保留；仓库更名不迁移运行目录。
 
 `audit.jsonl` 只记录会话 ID、档位、原因、时间和状态，不记录提示词、附件、工具参数或凭据。日志轮转上限约两份各 2 MB。
 
@@ -73,7 +79,7 @@ python3 install.py install --cli "/path/to/Codex.app/Contents/Resources/codex"
 ## 关闭启动接入
 
 ```sh
-cd savetokens  # 进入你克隆的仓库
+cd codex-auto-effort  # 进入你克隆的仓库
 python3 install.py uninstall
 ```
 
@@ -85,7 +91,7 @@ python3 install.py uninstall
 python3 -m unittest discover -v
 ```
 
-模拟协议、真实原版 App Server 验证、桌面重启后的实测是三个独立证据层级。公开的验证摘要见 [docs/verification.md](docs/verification.md)。本地探针生成的 `verification.json` 含运行元数据，默认不提交。
+模拟协议、真实原版 App Server 验证、桌面重启后的实测是三个独立证据层级。公开的验证摘要见 [docs/verification.md](docs/verification.md)。本地探针生成的 `verification.json` 包含版本、模型目录及测试结果，默认不提交；新版探针不导出原始审计日志。
 
 
 只检查本机服务端连接与模型目录（不发起模型推理）：
@@ -97,9 +103,11 @@ python3 live_probe.py
 可选真实推理测试会发起两轮请求并使用账号额度：
 
 ```sh
-python3 live_probe.py --live
+python3 live_probe.py --live --model MODEL_ID
 # 也可添加 --cli 指定原版 CLI
 ```
+
+真实推理必须显式指定 `--model`；探针不会替你选择模型。目录检查会读取所有分页，未找到目标模型会直接报告错误。
 
 `preview` 只显示文本规则的分类，不读取会话固定档位、模型目录、图片或实际请求；不能作为桌面接入证据。
 
@@ -110,3 +118,6 @@ python3 live_probe.py --live
 日志中仍有会话 ID 和时间等元数据。提交 Issue 前请删除这些字段及个人路径，不要上传 `audit*.jsonl`、`verification.json`、`installation.json`、凭据或完整对话。仓库不包含个人截图和实际运行日志。
 
 欢迎提供脱敏的规则误判样例、协议兼容性报告或聚焦修复。提交代码前运行上述离线测试，注明操作系统、Python 和原版 CLI 版本；不将模拟协议通过写成真实桌面验证。参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+
+本轮检查发现的问题、已完成优化及剩余限制见 [兼容性审查](docs/compatibility.md)。

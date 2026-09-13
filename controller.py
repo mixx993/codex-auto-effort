@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Local, credential-free JSONL middleware for the desktop's Codex CLI."""
 import argparse
+from collections import deque
 import copy
 import datetime
 import fcntl
@@ -13,33 +14,40 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = Path(__file__).resolve().parent
-DEFAULTS = {"enabled": True, "model": "gpt-6-astra", "ceiling": "max", "pins": {}}
+DEFAULTS = {"enabled": True, "model": "*", "ceiling": "max", "pins": {}}
 LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"]
 
 
-def atomic_json(path, value):
+def atomic_write(path, data, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".write-")
     try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+        os.chmod(name, mode)
         os.replace(name, path)
     finally:
         if os.path.exists(name):
             os.unlink(name)
 
 
+def atomic_json(path, value):
+    atomic_write(path, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+
 def read_config(root=ROOT):
     p = root / "config.json"
-    value = json.loads(p.read_text()) if p.exists() else {}
-    config = dict(DEFAULTS, **value)
+    value = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    if not isinstance(value, dict):
+        raise ValueError("config must be an object")
+    config = dict(copy.deepcopy(DEFAULTS), **value)
     if type(config["enabled"]) is not bool or config["ceiling"] not in LEVELS[:-1]:
         raise ValueError("invalid config")
-    if not isinstance(config["pins"], dict) or any(v not in LEVELS for v in config["pins"].values()):
+    if not isinstance(config["model"], str) or not config["model"].strip():
+        raise ValueError("invalid model filter")
+    if not isinstance(config["pins"], dict) or any(not isinstance(v, str) or not v for v in config["pins"].values()):
         raise ValueError("invalid pins")
     return config
 
@@ -66,12 +74,15 @@ def classify(text, previous=None, attachment=False):
     if explicit:
         return explicit[1].lower(), "用户明确指定", True
     if re.fullmatch(r"(?:好的?[，, ]*)?(?:继续|继续吧|接着做|开始吧|执行|可以|没问题|continue|go ahead)[。.!！\s]*", text, re.I):
-        return previous or "medium", "延续上一轮任务档位", False
+        effort = previous if previous in LEVELS else "medium"
+        if attachment:
+            effort = LEVELS[max(LEVELS.index(effort), LEVELS.index("high"))]
+        return effort, "延续上一轮任务档位", False
     rules = [
         ("max", r"开放性难题|长期未解决|形式化证明|证明.{0,12}(?:猜想|定理)|open research problem|prove.{0,20}theorem", "开放性推理或形式化证明"),
         ("xhigh", r"分布式.{0,12}(?:一致性|死锁)|复杂重构|系统架构(?:设计|决策)|反复.{0,12}(?:失败|未解决)|数据(?:损坏|丢失|完整性)|安全漏洞|竞争条件|race condition|deadlock|data corruption", "疑难故障、架构或数据完整性"),
         ("high", r"跨模块|架构|未知原因|原因不明|排查|性能瓶颈|交叉核对|多份.{0,12}(?:核对|对比)|图纸.{0,12}(?:核对|建模)|(?:平面|立面).{0,24}(?:结构|核对)|重构|方案.{0,10}(?:比较|对比|取舍)|设计.{0,8}(?:系统|产品)|debug|investigate|cross.module|refactor", "需要排查、跨模块或多资料推理"),
-        ("medium", r"开发|实现|增加|添加|修复|测试|构建|编写|生成|制作|分析|开发|implement|build|create|fix|test|analy[sz]e", "常规实现或分析"),
+        ("medium", r"开发|实现|增加|添加|修复|测试|构建|编写|生成|制作|分析|\b(?:implement|build|create|fix|test|analy[sz]e)\b", "常规实现或分析"),
         ("low", r"翻译|改名|重命名|格式(?:化|调整)|润色|解释.{0,10}(?:这句|这行|命令)|现在几点|今天几号|你好|translate|rename|reformat|hello", "明确的简单任务"),
     ]
     for effort, pattern, reason in rules:
@@ -82,6 +93,23 @@ def classify(text, previous=None, attachment=False):
     if attachment:
         return "high", "附带非文本资料，采用保守档位", False
     return "medium", "信息不足，使用日常起点", False
+
+
+def automatic_effort(requested, choices, ceiling):
+    """Use only advertised, ordered levels, without exceeding the rule or cap."""
+    limit = min(LEVELS.index(requested), LEVELS.index(ceiling), LEVELS.index("max"))
+    return next((level for level in reversed(LEVELS[:limit + 1]) if level in choices), None)
+
+
+def mode_settings(params):
+    mode = params.get("collaborationMode")
+    if mode is None:
+        return {}
+    if not isinstance(mode, dict) or not isinstance(mode.get("settings"), dict):
+        raise ValueError("invalid collaboration mode")
+    if mode.get("mode") not in ("plan", "default") or not isinstance(mode["settings"].get("model"), str):
+        raise ValueError("unknown collaboration mode shape")
+    return mode["settings"]
 
 
 class Router:
@@ -98,12 +126,18 @@ class Router:
         if not isinstance(p, dict):
             return message
         ident, thread = message.get("id"), p.get("threadId")
-        if ident is not None and method:
+        if type(ident) not in (str, int):
+            return message  # Never rewrite notifications or malformed request IDs.
+        tracked = ("model/list", "thread/start", "thread/resume", "thread/fork", "thread/settings/update", "turn/start")
+        if method in tracked:
             # Track only protocol metadata; never persist prompt bodies.
-            self.pending[ident] = (method, thread)
+            self.pending[ident] = (method, thread, p.get("cursor")) if method == "model/list" else (method, thread)
         if method == "thread/settings/update" and thread:
-            effort = p.get("effort") or (p.get("collaborationMode") or {}).get("settings", {}).get("reasoning_effort")
-            if effort in LEVELS and effort != self.threads.get(thread, {}).get("effort"):
+            config = self.config()
+            mode = mode_settings(p)
+            effort = mode.get("reasoning_effort") if mode else p.get("effort")
+            model = mode.get("model") or p.get("model") or self.threads.get(thread, {}).get("model")
+            if config["enabled"] and config["model"] in ("*", model) and isinstance(effort, str) and effort and effort != self.threads.get(thread, {}).get("effort"):
                 self.pending[ident] = (method, thread, effort)
         if method != "turn/start" or not thread or p.get("toolOutput") is not None:
             return message
@@ -121,9 +155,9 @@ class Router:
         config = self.config()
         if not config["enabled"]:
             return message
-        mode = (p.get("collaborationMode") or {}).get("settings") or {}
+        mode = mode_settings(p)
         model = mode.get("model") or p.get("model") or self.threads.get(thread, {}).get("model")
-        if model != config["model"]:
+        if not isinstance(model, str) or config["model"] not in ("*", model):
             return message
         choices = self.supported.get(model)
         if not choices:
@@ -134,7 +168,7 @@ class Router:
         if pinned and not explicit:
             effort, reason = pinned, "用户固定档位"
         if not explicit and not pinned:
-            effort = LEVELS[min(LEVELS.index(effort), LEVELS.index(config["ceiling"]))]
+            effort = automatic_effort(effort, choices, config["ceiling"])
         if effort not in choices:
             # No silent substitution of a user's explicit selection.
             self.audit({"event": "skipped", "thread": thread, "reason": "unsupported_effort", "requested": effort})
@@ -151,9 +185,11 @@ class Router:
         if not isinstance(message, dict):
             return
         p, method = message.get("params") or {}, message.get("method")
+        if not isinstance(p, dict):
+            return
         if method == "thread/settings/updated":
             thread, settings = p.get("threadId"), p.get("threadSettings", {})
-            self.threads[thread] = settings
+            self.threads[thread] = {"model": settings.get("model"), "effort": settings.get("effort")}
             self.audit({"event": "server_settings", "thread": thread, "model": settings.get("model"), "effort": settings.get("effort")})
         if method == "turn/started":
             self.active.add(p.get("threadId"))
@@ -164,6 +200,8 @@ class Router:
         if method:
             return
         ident = message.get("id")
+        if type(ident) not in (str, int):
+            return
         pending = self.pending.pop(ident, None)
         if pending is None:
             return
@@ -178,8 +216,11 @@ class Router:
         if not isinstance(result, dict) or "error" in message:
             return
         if method == "model/list":
+            if len(pending) < 3 or pending[2] is None:
+                self.supported.clear()
             for model in result.get("data", []):
-                self.supported[model.get("model")] = [x["reasoningEffort"] for x in model.get("supportedReasoningEfforts", []) if x.get("reasoningEffort") in LEVELS]
+                if isinstance(model, dict) and isinstance(model.get("model"), str):
+                    self.supported[model["model"]] = [x["reasoningEffort"] for x in model.get("supportedReasoningEfforts", []) if isinstance(x, dict) and isinstance(x.get("reasoningEffort"), str)]
         if method in ("thread/start", "thread/resume", "thread/fork"):
             thread = result.get("thread", {}).get("id")
             self.threads[thread] = {"model": result.get("model"), "effort": result.get("reasoningEffort")}
@@ -188,7 +229,7 @@ class Router:
                 self.previous[thread] = effort
             if result.get("thread", {}).get("status", {}).get("type") == "active":
                 self.active.add(thread)
-        if method == "thread/settings/update" and len(pending) == 3:
+        if method == "thread/settings/update" and len(pending) == 3 and self.config()["enabled"]:
             self.pin(thread, pending[2])
             self.audit({"event": "manual_pin", "thread": thread, "effort": pending[2]})
 
@@ -221,54 +262,112 @@ def proxy(args, real, root=ROOT):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     selector = selectors.DefaultSelector()
-    selector.register(sys.stdin.buffer, selectors.EVENT_READ, "client")
-    selector.register(child.stdout, selectors.EVENT_READ, "server")
-    buffers = {"client": b"", "server": b""}
+    sources = {"client": sys.stdin.fileno(), "server": child.stdout.fileno()}
+    targets = {"client": child.stdin.fileno(), "server": sys.stdout.fileno()}
+    frames = {side: bytearray() for side in sources}
+    queues = {side: bytearray() for side in sources}
+    raw_frame = {side: False for side in sources}
+    ended = set()
+    original_blocking = {}
+    # Backpressure is independent in each direction: a large input must not
+    # prevent draining server output. Oversized frames pass through unchanged.
+    high_water, max_frame = 1_048_576, 16_777_216
+
+    def watch(fd, events, data):
+        if fd in selector.get_map():
+            if events:
+                selector.modify(fd, events, data)
+            else:
+                selector.unregister(fd)
+        elif events:
+            selector.register(fd, events, data)
+
+    def route(side, frame):
+        try:
+            message = json.loads(frame)
+            if side == "client":
+                routed = router.outgoing(message)
+                if routed is not message:
+                    return json.dumps(routed, ensure_ascii=False).encode() + b"\n"
+            else:
+                router.incoming(message)
+        except Exception as error:
+            audit({"event": "passthrough_error", "error_type": type(error).__name__}, root)
+        return frame
+
     try:
-        while selector.get_map():
-            for key, _ in selector.select(1):
-                side = key.data
-                data = os.read(key.fd, 65536)
-                if not data:
-                    selector.unregister(key.fileobj)
-                    # Preserve an unterminated final frame unchanged.
-                    if buffers[side]:
-                        target = child.stdin if side == "client" else sys.stdout.buffer
-                        target.write(buffers[side]); target.flush()
-                        buffers[side] = b""
-                    if side == "client":
-                        child.stdin.close()
-                    else:
-                        return child.wait()
+        for fd in (*sources.values(), *targets.values()):
+            original_blocking[fd] = os.get_blocking(fd)
+            os.set_blocking(fd, False)
+        while True:
+            for side in sources:
+                reading = side not in ended and len(queues[side]) < high_water
+                # Once the server exits, stop consuming new client input.
+                if side == "client" and "server" in ended:
+                    reading = False
+                watch(sources[side], selectors.EVENT_READ if reading else 0, (side, "read"))
+                if side == "client" and child.stdin.closed:
                     continue
-                buffers[side] += data
-                while b"\n" in buffers[side]:
-                    line, buffers[side] = buffers[side].split(b"\n", 1)
-                    outgoing = line + b"\n"
-                    try:
-                        message = json.loads(line)
-                        if side == "client":
-                            routed = router.outgoing(message)
-                            if routed is not message:
-                                outgoing = json.dumps(routed, ensure_ascii=False).encode() + b"\n"
-                        else:
-                            router.incoming(message)
-                    except Exception as error:
-                        audit({"event": "passthrough_error", "error_type": type(error).__name__}, root)
-                    target = child.stdin if side == "client" else sys.stdout.buffer
-                    target.write(outgoing); target.flush()
-            if child.poll() is not None and not selector.get_map():
+                watch(targets[side], selectors.EVENT_WRITE if queues[side] else 0, (side, "write"))
+                if side == "client" and side in ended and not queues[side] and not child.stdin.closed:
+                    child.stdin.close()
+            if "server" in ended and not queues["server"]:
                 break
-    except (BrokenPipeError, ConnectionResetError):
+            for key, _ in selector.select():
+                side, action = key.data
+                try:
+                    if action == "write":
+                        written = os.write(key.fd, queues[side][:65536])
+                        del queues[side][:written]
+                        continue
+                    data = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                except BrokenPipeError:
+                    if side != "client":
+                        raise
+                    watch(targets[side], 0, (side, "write"))
+                    queues[side].clear()
+                    frames[side].clear()
+                    ended.add(side)
+                    child.stdin.close()
+                    continue
+                if not data:
+                    ended.add(side)
+                    queues[side].extend(frames[side])
+                    frames[side].clear()
+                    continue
+                frames[side].extend(data)
+                while b"\n" in frames[side]:
+                    index = frames[side].index(b"\n") + 1
+                    frame = bytes(frames[side][:index])
+                    del frames[side][:index]
+                    queues[side].extend(frame if raw_frame[side] or len(frame) > max_frame else route(side, frame))
+                    raw_frame[side] = False
+                if raw_frame[side] or len(frames[side]) > max_frame:
+                    queues[side].extend(frames[side])
+                    frames[side].clear()
+                    raw_frame[side] = True
+        return child.wait(timeout=3)
+    except (BrokenPipeError, ConnectionResetError, subprocess.TimeoutExpired):
         pass
     finally:
         selector.close()
+        for fd, blocking in original_blocking.items():
+            try:
+                os.set_blocking(fd, blocking)
+            except OSError:
+                pass
         if child.poll() is None:
             child.terminate()
             try:
                 child.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                child.kill(); child.wait()
+                child.kill()
+                child.wait()
+        child.stdout.close()
+        if not child.stdin.closed:
+            child.stdin.close()
     return child.returncode or 0
 
 
@@ -304,7 +403,10 @@ def main():
     p = sub.add_parser("pin"); p.add_argument("thread"); p.add_argument("effort", choices=LEVELS)
     p = sub.add_parser("auto"); p.add_argument("thread", help="会话 ID，或 all 清除全部固定档位")
     p = sub.add_parser("ceiling"); p.add_argument("effort", choices=LEVELS[:-1])
+    p = sub.add_parser("model"); p.add_argument("name", help="模型 ID；使用 '*' 对所有已知兼容模型生效（不切换模型）")
     args = parser.parse_args()
+    if args.command == "model" and not args.name.strip():
+        parser.error("model filter cannot be empty")
     if args.command == "preview":
         effort, reason, _ = classify(args.text)
         print(json.dumps({"effort": effort, "reason": reason, "mode": "local_rule_preview"}, ensure_ascii=False))
@@ -317,12 +419,15 @@ def main():
         edit_config(lambda c: c["pins"].clear() if args.thread == "all" else c["pins"].pop(args.thread, None))
     if args.command == "ceiling":
         edit_config(lambda c: c.update(ceiling=args.effort))
+    if args.command == "model":
+        edit_config(lambda c: c.update(model=args.name))
     print(json.dumps(read_config(), ensure_ascii=False, indent=2))
     path = ROOT / "audit.jsonl"
     if path.exists():
         print("最近记录：")
-        for line in path.read_text().splitlines()[-8:]:
-            print(line)
+        with path.open(encoding="utf-8") as stream:
+            for line in deque(stream, maxlen=8):
+                print(line.rstrip())
     return 0
 
 

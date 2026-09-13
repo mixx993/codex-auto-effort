@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 import plistlib
 import shlex
-import shutil
 import subprocess
 import sys
+
+from controller import DEFAULTS, atomic_json, atomic_write, edit_config, read_config
 
 SOURCE = Path(__file__).resolve().parent
 DEST = Path.home() / ".codex" / "effort-controller"
@@ -31,7 +32,7 @@ def find_cli(explicit=None):
 
 
 def launchctl(*args, check=True):
-    return subprocess.run(["/bin/launchctl", *args], check=check, capture_output=True, text=True)
+    return subprocess.run(["/bin/launchctl", *args], check=check, capture_output=True, text=True, timeout=15)
 
 
 def install(cli=None):
@@ -41,47 +42,88 @@ def install(cli=None):
     if real == (DEST / "codex-wrapper").resolve() or real == (DEST / "controller.py").resolve():
         raise SystemExit("--cli 必须指向原版 CLI，不能指向包装程序。未修改环境。")
     info_path = DEST / "installation.json"
+    runner = DEST / "codex-wrapper"
+    env_script = DEST / "enable-environment.sh"
+    values = {"CODEX_CLI_PATH": str(runner), "CODEX_APP_SERVER_FORCE_CLI": "1"}
+    current = {key: launchctl("getenv", key, check=False).stdout.strip() or None for key in KEYS}
     if DEST.exists() and not info_path.exists():
         raise SystemExit("安装目录已存在且不属于此安装器，未覆盖。")
-    if PLIST.exists() and not info_path.exists():
+    info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
+    if info and info.get("installed_by") != LABEL:
+        raise SystemExit("已有安装记录不属于此安装器，未覆盖。")
+    if PLIST.exists() and (not info or not owns_plist()):
         raise SystemExit("启动配置名称已占用，未覆盖。")
-    previous = {key: launchctl("getenv", key, check=False).stdout.strip() or None for key in KEYS}
-    if info_path.exists():
-        info = json.loads(info_path.read_text())
-        if info.get("installed_by") != LABEL:
-            raise SystemExit("已有安装记录不属于此安装器，未覆盖。")
-        previous = info["previous_environment"]
-    elif previous["CODEX_CLI_PATH"]:
-        raise SystemExit("已有自定义 CODEX_CLI_PATH；请先确认如何与现有包装程序衔接。")
-    DEST.mkdir(parents=True, exist_ok=True, mode=0o700)
-    shutil.copy2(SOURCE / "controller.py", DEST / "controller.py")
-    shutil.copy2(SOURCE / "README.md", DEST / "README.md")
-    info = {"real_cli": str(real), "previous_environment": previous, "source": str(SOURCE), "installed_by": LABEL}
-    info_path.write_text(json.dumps(info, indent=2) + "\n")
-    if not (DEST / "config.json").exists():
-        (DEST / "config.json").write_text(json.dumps({"enabled": True, "model": "gpt-6-astra", "ceiling": "max", "pins": {}}, indent=2) + "\n")
-    runner = DEST / "codex-wrapper"
+    active = info.get("active", current["CODEX_CLI_PATH"] == str(runner))
+    previous = info["previous_environment"] if active else current
+    if current["CODEX_CLI_PATH"] not in (None, str(runner)):
+        raise SystemExit("已有其他自定义 CODEX_CLI_PATH，未覆盖。")
+    if active and any(current[k] not in (values[k], previous[k]) for k in KEYS):
+        raise SystemExit("安装后启动环境已被其他程序修改，未覆盖。")
+    if (DEST / "config.json").exists():
+        read_config(DEST)  # Validate before touching the installation.
     python = shlex.quote(sys.executable)
-    runner.write_text("#!/bin/sh\nexec " + python + " " + shlex.quote(str(DEST / "controller.py")) + ' --wrap "$@"\n')
-    runner.chmod(0o700)
-    command = DEST / "codex-effort"
-    command.write_text("#!/bin/sh\nexec " + python + " " + shlex.quote(str(DEST / "controller.py")) + ' "$@"\n')
-    command.chmod(0o700)
-    values = {"CODEX_CLI_PATH": str(runner), "CODEX_APP_SERVER_FORCE_CLI": "1"}
-    env_script = DEST / "enable-environment.sh"
-    env_script.write_text("#!/bin/sh\nset -eu\n" + "\n".join("/bin/launchctl setenv " + shlex.quote(k) + " " + shlex.quote(v) for k, v in values.items()) + "\n")
-    env_script.chmod(0o700)
-    PLIST.parent.mkdir(parents=True, exist_ok=True)
-    plist = {"Label": LABEL, "ProgramArguments": ["/bin/sh", str(env_script)], "RunAtLoad": True}
-    PLIST.write_bytes(plistlib.dumps(plist))
+    script = "#!/bin/sh\nexec " + python + " " + shlex.quote(str(DEST / "controller.py"))
+    files = {
+        DEST / "controller.py": ((SOURCE / "controller.py").read_bytes(), 0o600),
+        DEST / "README.md": ((SOURCE / "README.md").read_bytes(), 0o600),
+        runner: ((script + ' --wrap "$@"\n').encode(), 0o700),
+        DEST / "codex-effort": ((script + ' "$@"\n').encode(), 0o700),
+        env_script: (("#!/bin/sh\nset -eu\n" + "\n".join("/bin/launchctl setenv " + shlex.quote(k) + " " + shlex.quote(v) for k, v in values.items()) + "\n").encode(), 0o700),
+        PLIST: (plistlib.dumps({"Label": LABEL, "ProgramArguments": ["/bin/sh", str(env_script)], "RunAtLoad": True}), 0o600),
+        info_path: ((json.dumps({"real_cli": str(real), "previous_environment": previous, "source": str(SOURCE), "installed_by": LABEL, "active": True}, indent=2) + "\n").encode(), 0o600),
+    }
+    if not (DEST / "config.json").exists():
+        files[DEST / "config.json"] = ((json.dumps(DEFAULTS, indent=2) + "\n").encode(), 0o600)
+    backup = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path in files}
     domain = "gui/" + str(os.getuid())
-    launchctl("bootout", domain + "/" + LABEL, check=False)
-    result = launchctl("bootstrap", domain, str(PLIST), check=False)
-    # Explicitly apply now; bootstrap schedules the next login too.
-    for key, value in values.items():
-        launchctl("setenv", key, value)
-    verified = all(launchctl("getenv", k).stdout.strip() == v for k, v in values.items())
-    print(json.dumps({"installed": str(DEST), "environment_verified": verified, "login_agent_loaded": result.returncode == 0, "desktop_restart_required": True}, ensure_ascii=False, indent=2))
+    was_loaded = launchctl("print", domain + "/" + LABEL, check=False).returncode == 0
+    if was_loaded and not PLIST.exists():
+        raise SystemExit("同名登录服务已存在，但没有可验证的配置，未修改。")
+    touched_environment = False
+    try:
+        DEST.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for path, (data, mode) in files.items():
+            atomic_write(path, data, mode)
+        touched_environment = True
+        launchctl("bootout", domain + "/" + LABEL, check=False)
+        launchctl("bootstrap", domain, str(PLIST))
+        for key, value in values.items():
+            launchctl("setenv", key, value)
+        if any(launchctl("getenv", k).stdout.strip() != v for k, v in values.items()):
+            raise RuntimeError("启动环境校验失败")
+    except Exception as error:
+        failures = []
+        def restore(action):
+            try:
+                action()
+            except Exception as rollback_error:
+                failures.append(type(rollback_error).__name__)
+        if touched_environment:
+            restore(lambda: launchctl("bootout", domain + "/" + LABEL, check=False))
+        for path, saved in backup.items():
+            restore(lambda path=path, saved=saved: atomic_write(path, *saved) if saved else path.unlink(missing_ok=True))
+        if touched_environment:
+            if was_loaded:
+                restore(lambda: launchctl("bootstrap", domain, str(PLIST)))
+            for key, value in current.items():
+                restore(lambda key=key, value=value: set_environment(key, value))
+        if not info:
+            try:
+                DEST.rmdir()
+            except OSError:
+                pass
+        suffix = "；回滚未完全成功，请检查启动环境" if failures else "；已回滚此次改动"
+        raise SystemExit(type(error).__name__ + suffix) from error
+    print(json.dumps({"installed": str(DEST), "environment_verified": True, "login_agent_loaded": True, "desktop_restart_required": True}, ensure_ascii=False, indent=2))
+
+
+def set_environment(key, value):
+    return launchctl("unsetenv", key) if value is None else launchctl("setenv", key, value)
+
+
+def owns_plist():
+    value = plistlib.loads(PLIST.read_bytes())
+    return value.get("Label") == LABEL and value.get("ProgramArguments") == ["/bin/sh", str(DEST / "enable-environment.sh")]
 
 
 def uninstall():
@@ -91,24 +133,19 @@ def uninstall():
     info = json.loads(path.read_text())
     if info.get("installed_by") != LABEL:
         raise SystemExit("安装标记不符，未修改。")
+    if PLIST.exists() and not owns_plist():
+        raise SystemExit("登录配置已被其他程序替换，未修改。")
+    edit_config(lambda config: config.update(enabled=False), DEST)
     launchctl("bootout", "gui/" + str(os.getuid()) + "/" + LABEL, check=False)
     if PLIST.exists():
-        value = plistlib.loads(PLIST.read_bytes())
-        if value.get("Label") == LABEL:
-            PLIST.unlink()
+        PLIST.unlink()
     expected = {"CODEX_CLI_PATH": str(DEST / "codex-wrapper"), "CODEX_APP_SERVER_FORCE_CLI": "1"}
-    for key, previous in info["previous_environment"].items():
+    for key in KEYS:
         current = launchctl("getenv", key, check=False).stdout.strip() or None
-        if current != expected[key]:
-            continue  # Preserve later user changes.
-        if previous is None:
-            launchctl("unsetenv", key)
-        else:
-            launchctl("setenv", key, previous)
-    config_path = DEST / "config.json"
-    config = json.loads(config_path.read_text())
-    config["enabled"] = False
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
+        if current == expected[key]:
+            set_environment(key, info["previous_environment"][key])
+    info["active"] = False
+    atomic_json(path, info)
     print("已关闭自动选档并恢复原启动环境；代码和日志保留供审查。桌面应用下次启动后恢复原入口。")
 
 

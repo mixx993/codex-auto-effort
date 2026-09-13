@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 import shlex
 import subprocess
+import plistlib
 
 import install
 
@@ -25,7 +26,7 @@ class InstallTests(unittest.TestCase):
                     environment[args[1]] = args[2]
                 elif args[0] == "unsetenv":
                     environment.pop(args[1], None)
-                return subprocess.CompletedProcess(args, 0, environment.get(args[1], "") if args[0] == "getenv" else "", "")
+                return subprocess.CompletedProcess(args, 1 if args[0] == "print" and not plist.exists() else 0, environment.get(args[1], "") if args[0] == "getenv" else "", "")
             with patch.object(install, "DEST", dest), patch.object(install, "PLIST", plist), patch.object(install, "launchctl", fake), patch.object(install.sys, "platform", "darwin"), contextlib.redirect_stdout(io.StringIO()):
                 install.install(str(real))
                 info = json.loads((dest / "installation.json").read_text())
@@ -81,6 +82,95 @@ class UninstallTests(unittest.TestCase):
             (root / "installation.json").write_text('{"installed_by":"other"}')
             with patch.object(install, "DEST", root), self.assertRaises(SystemExit):
                 install.uninstall()
+
+
+class InstallationRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.dest, self.plist = root / "installed", root / "agent.plist"
+        self.cli = root / "original-cli"
+        self.cli.write_text("#!/bin/sh\nexit 0\n")
+        self.cli.chmod(0o700)
+        self.env = {"CODEX_APP_SERVER_FORCE_CLI": "0"}
+        self.loaded = False
+        self.fail_once = None
+        for name, value in [("DEST", self.dest), ("PLIST", self.plist), ("launchctl", self.launchctl)]:
+            patcher = patch.object(install, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(install.sys, "platform", "darwin")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.output = contextlib.redirect_stdout(io.StringIO())
+        self.output.__enter__()
+        self.addCleanup(self.output.__exit__, None, None, None)
+
+    def launchctl(self, *args, check=True):
+        if self.fail_once == args[0]:
+            self.fail_once = None
+            raise subprocess.CalledProcessError(1, args)
+        stdout, code = "", 0
+        if args[0] == "getenv":
+            stdout = self.env.get(args[1], "")
+        elif args[0] == "setenv":
+            self.env[args[1]] = args[2]
+        elif args[0] == "unsetenv":
+            self.env.pop(args[1], None)
+        elif args[0] == "print":
+            code = 0 if self.loaded else 1
+        elif args[0] == "bootstrap":
+            self.loaded = True
+        elif args[0] == "bootout":
+            self.loaded = False
+        return subprocess.CompletedProcess(args, code, stdout, "")
+
+    def test_bootstrap_failure_rolls_back_first_install(self):
+        self.fail_once = "bootstrap"
+        with self.assertRaisesRegex(SystemExit, "已回滚"):
+            install.install(str(self.cli))
+        self.assertFalse(self.dest.exists())
+        self.assertFalse(self.plist.exists())
+        self.assertFalse(self.loaded)
+        self.assertEqual(self.env, {"CODEX_APP_SERVER_FORCE_CLI": "0"})
+
+    def test_environment_failure_restores_existing_files_and_service(self):
+        install.install(str(self.cli))
+        before = {p.name: p.read_bytes() for p in self.dest.iterdir()}
+        before_env = dict(self.env)
+        self.fail_once = "setenv"
+        with self.assertRaisesRegex(SystemExit, "已回滚"):
+            install.install(str(self.cli))
+        self.assertEqual({p.name: p.read_bytes() for p in self.dest.iterdir()}, before)
+        self.assertEqual(self.env, before_env)
+        self.assertTrue(self.loaded)
+
+    def test_later_custom_wrapper_not_overwritten_by_reinstall(self):
+        install.install(str(self.cli))
+        self.env["CODEX_CLI_PATH"] = "/custom/wrapper"
+        with self.assertRaises(SystemExit):
+            install.install(str(self.cli))
+        self.assertEqual(self.env["CODEX_CLI_PATH"], "/custom/wrapper")
+
+    def test_foreign_plist_is_preserved_on_uninstall_and_reinstall(self):
+        install.install(str(self.cli))
+        contents = plistlib.dumps({"Label": install.LABEL, "ProgramArguments": ["/other/program"]})
+        self.plist.write_bytes(contents)
+        for action in [install.uninstall, lambda: install.install(str(self.cli))]:
+            with self.assertRaises(SystemExit):
+                action()
+            self.assertEqual(self.plist.read_bytes(), contents)
+        self.assertTrue(self.loaded)
+
+    def test_reinstall_after_uninstall_saves_new_environment(self):
+        install.install(str(self.cli))
+        install.uninstall()
+        self.env["CODEX_APP_SERVER_FORCE_CLI"] = "later-value"
+        install.install(str(self.cli))
+        install.uninstall()
+        self.assertEqual(self.env, {"CODEX_APP_SERVER_FORCE_CLI": "later-value"})
+        self.assertFalse(json.loads((self.dest / "config.json").read_text())["enabled"])
 
 
 if __name__ == "__main__":
