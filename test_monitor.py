@@ -108,6 +108,38 @@ class MonitorTests(unittest.TestCase):
         (self.root / 'config.json').write_text('{"enabled":false}')
         self.assertFalse(self.monitor.snapshot()['enabled'])
 
+    def test_desktop_name_overrides_database_message_title(self):
+        self.event('selected', 1, effort='medium')
+        index = self.home / 'session_index.jsonl'
+        self.append(index, {'id': 'other-task', 'thread_name': '别的任务'})
+        self.append(index, {'id': 'task-a', 'thread_name': '正式任务名称', 'updated_at': '2026-09-13T05:00:00Z'})
+        self.assertEqual(self.row()['title'], '正式任务名称')
+        self.append(index, {'id': 'task-a', 'thread_name': '重命名后的任务', 'updated_at': '2026-09-13T06:00:00Z'})
+        self.append(index, {'id': 'task-a', 'thread_name': '过期名称', 'updated_at': '2026-09-13T04:00:00Z'})
+        self.assertEqual(self.row()['title'], '重命名后的任务')
+
+    def test_desktop_name_works_without_database_metadata(self):
+        self.event('selected', 1, effort='medium')
+        (self.home / 'state_5.sqlite').unlink()
+        self.append(self.home / 'session_index.jsonl', {'id': 'task-a', 'thread_name': '正式任务名称'})
+        self.assertEqual(self.row()['title'], '正式任务名称')
+
+    def test_missing_index_uses_database_title_without_attachment_boilerplate(self):
+        self.event('selected', 1, effort='medium')
+        self.assertEqual(self.row()['title'], '测试任务')
+        with sqlite3.connect(self.home / 'state_5.sqlite') as connection:
+            connection.execute('UPDATE threads SET title=?', ('# Files mentioned by the user: PRIVATE_ATTACHMENT',))
+        self.assertEqual(self.row()['title'], '任务名称暂不可用 · sk-a')
+
+    def test_replaced_index_does_not_retain_removed_names(self):
+        self.event('selected', 1, effort='medium')
+        index = self.home / 'session_index.jsonl'
+        self.append(index, {'id': 'task-a', 'thread_name': '正式任务名称'})
+        self.assertEqual(self.row()['title'], '正式任务名称')
+        index.rename(self.home / 'previous-index.jsonl')
+        self.append(index, {'id': 'other-task', 'thread_name': '另一个任务'})
+        self.assertEqual(self.row()['title'], '测试任务')
+
     def test_partial_lines_and_rotation_are_read_once(self):
         self.log.write_bytes(b'{"event":')
         tail = Tail(self.log)

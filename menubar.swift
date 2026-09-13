@@ -102,8 +102,8 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func taskName(_ task: [String: Any]) -> String {
         let name = task["title"] as? String ?? ""
-        if name.isEmpty || name.contains("# Files mentioned by the user:") {
-            return "附件任务 · " + String((task["thread"] as? String ?? "未知").suffix(4))
+        if name.isEmpty {
+            return "任务名称暂不可用 · " + String((task["thread"] as? String ?? "未知").suffix(4))
         }
         return name
     }

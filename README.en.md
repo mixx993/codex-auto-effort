@@ -64,7 +64,9 @@ Requires macOS 13+, the Swift compiler from Xcode Command Line Tools, and the Py
 
 `✓` means a server context/settings record was found; `…` means selected or accepted but unconfirmed; `!` means rejected; `OFF` means routing disabled; `?` means monitoring unavailable. The compact menu highlights effort, confirmation and a single-line task title. Details and task selection live in submenus. It follows the most recent routed task or a manually selected task, not the foreground chat, and does not imply a turn is still running.
 
-The helper reads local audit records, task titles/rollout paths and `turn_context` metadata. It does not emit prompts, change routing, or make model requests. Legacy logs use task/time correlation; newer logs include turn IDs. Missing/changed data leaves the result unconfirmed. Startup and catch-up session reads are limited to 4 MiB; older contexts beyond that window may be unavailable.
+Task names prefer the local `session_index.jsonl` desktop names and follow rename records; database titles are a fallback, excluding attachment boilerplate.
+
+The helper reads local audit records, the task-name index, task titles/rollout paths and `turn_context` metadata. It does not emit prompts, change routing, or make model requests. Legacy logs use task/time correlation; newer logs include turn IDs. Missing/changed data leaves the result unconfirmed. Startup and catch-up session reads are limited to 4 MiB; older contexts beyond that window may be unavailable.
 
 Works with the older installed wrapper without restarting Codex. No login item is installed. Quitting the menu app leaves routing running; delete its `.app` to remove the display. The builder refuses to overwrite an existing app; use `--output` for a new destination. For headless status use `python3 monitor.py` or add `--watch`.
 

@@ -55,6 +55,28 @@ class Tail:
             return
 
 
+class TaskNames:
+    """Desktop names live in the append-only session index, separate from SQL titles."""
+    def __init__(self, home):
+        self.reader = Tail(home / "session_index.jsonl")
+        self.names = {}
+
+    def read(self):
+        identity = self.reader.identity
+        offset = self.reader.offset
+        entries = list(self.reader.read())
+        if identity != self.reader.identity or self.reader.offset < offset:
+            self.names.clear()
+        for entry in entries:
+            thread, name = entry.get("id"), entry.get("thread_name")
+            if not isinstance(thread, str) or not isinstance(name, str) or not name.strip():
+                continue
+            updated = timestamp(entry.get("updated_at"))
+            if updated >= self.names.get(thread, (0, ""))[0]:
+                self.names[thread] = (updated, name.strip())
+        return {thread: value[1] for thread, value in self.names.items()}
+
+
 def task_metadata(home, ids):
     """Only fetch titles and rollout paths; never query message columns."""
     if not ids:
@@ -80,6 +102,7 @@ class Monitor:
         root = self.home / "effort-controller"
         self.audit = [Tail(root / "audit.previous.jsonl"), Tail(root / "audit.jsonl")]
         self.requests, self.sessions, self.contexts = {}, {}, {}
+        self.task_names = TaskNames(self.home)
 
     def snapshot(self):
         events = [event for tail in self.audit for event in tail.read()]
@@ -99,6 +122,7 @@ class Monitor:
         recent = sorted(self.requests, key=lambda t: timestamp(self.requests[t].get("time")), reverse=True)[:12]
         self.requests = {t: self.requests[t] for t in recent}
         metadata = task_metadata(self.home, recent)
+        names = self.task_names.read()
         rows = []
         for thread in recent:
             request = self.requests[thread]
@@ -117,8 +141,11 @@ class Monitor:
                         if timestamp(context["time"]) >= timestamp(self.contexts.get(thread, {}).get("time")):
                             self.contexts[thread] = context
             context = self.contexts.get(thread, {})
+            title = names.get(thread) or task.get("title")
+            if not isinstance(title, str) or not title.strip() or "# Files mentioned by the user:" in title:
+                title = "任务名称暂不可用 · " + thread[-4:]
             row = {
-                "thread": thread, "title": str(task.get("title") or ("任务 " + thread[-8:]))[:80],
+                "thread": thread, "title": title,
                 "requested": request.get("effort"), "original": request.get("original_effort"),
                 "actual": None, "phase": request["phase"], "source": None,
                 "time": request.get("time"), "actual_time": None,
