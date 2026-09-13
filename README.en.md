@@ -62,7 +62,7 @@ open "$HOME/Applications/Codex Auto Effort.app"
 
 Requires macOS 13+, the Swift compiler from Xcode Command Line Tools, and the Python interpreter used to build it. This builds an ad-hoc-signed local app, not a notarized binary distribution.
 
-Colors encode effort: L blue, M teal, H orange, XH purple, MAX pink, UL red. A legend is available under More. Symbols encode confirmation independently; disabled/disconnected monitoring uses the default system tint.
+Colors encode effort: L green, M blue, H orange, XH purple, MAX pink, UL red. A legend is available under More. Symbols encode confirmation independently; disabled/disconnected monitoring uses the default system tint.
 
 `✓` means a server context/settings record was found; `…` means selected or accepted but unconfirmed; `!` means rejected; `OFF` means routing disabled; `?` means monitoring unavailable. The compact menu highlights effort, confirmation and a single-line task title. Details and task selection live in submenus. It follows the most recent routed task or a manually selected task, not the foreground chat, and does not imply a turn is still running.
 

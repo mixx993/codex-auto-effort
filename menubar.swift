@@ -118,8 +118,8 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func effortColor(_ effort: String) -> NSColor {
         switch effort.lowercased() {
-        case "low": return .systemBlue
-        case "medium": return .systemTeal
+        case "low": return .systemGreen
+        case "medium": return .systemBlue
         case "high": return .systemOrange
         case "xhigh": return .systemPurple
         case "max": return .systemPink
