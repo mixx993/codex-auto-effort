@@ -1,0 +1,112 @@
+# SaveTokens
+
+**为 Codex 桌面端按任务选择推理强度的本地实验性控制程序。**
+
+[English](README.en.md) · [MIT License](LICENSE) · [验证范围](docs/verification.md)
+
+简单请求使用较低档位，复杂任务提高档位；支持手动固定和随时关闭。纯 Python 标准库，无第三方运行依赖。
+
+> 独立社区项目，与 OpenAI 无隶属或背书关系。名称表达减少不必要推理开销的目标；目前没有 token、费用或回答质量的对照实验，不承诺节省比例。仅发布本项目的包装程序，不包含桌面应用、原版 CLI、账户或模型访问权限。
+
+## 工作方式
+
+在当前桌面应用的 CLI 启动入口与原版 App Server 之间加入本地 JSONL 包装程序。在 `turn/start` 发送到原版服务端前选档；仍使用同一聊天、登录状态和原版 CLI，不需要 API key。
+
+## 状态与边界
+
+本程序使用本地启发式规则，不是能够完整理解任务的 AI 分类器。普通任务默认 medium，明确的简单工作 low，排查与跨模块工作 high，疑难架构与数据完整性 xhigh，形式化证明或开放性难题 max；不自动使用 ultra。文件数量、文本长度、耗时不作为升级依据。图片和资料引用只做保守判断，不读取图片内容。
+
+“继续”沿用本进程记录或服务端恢复的上一档位。独立的新需求重新判断。重启恢复时只有上次档位，没有自动获得整个对话语义。规则有可能高估或低估任务，应用内手动改档或 `pin` 可覆盖。
+
+仅处理已通过 `model/list` 确认可用档位的 GPT-6 Astra 请求。其他模型、工具结果、正在运行的轮次内追加消息、队列启动、未知模型目录或协议错误保持原请求。并非在一次生成的内部实时变档。其他模型以及权限、工具、消息内容、审批请求和响应均不修改。
+
+计划模式的 `collaborationMode.settings.reasoning_effort` 优先于顶层 effort，因此两处同步填写，保留其余设置。手动修改会话档位成功后会保存该会话的固定档位，避免与用户争抢。重复同步相同档位不会固定。
+
+## 安装
+
+需要 macOS、Python 3.9+ 和已安装且已登录的兼容桌面应用。当前路由默认只处理服务端目录中可用的 `gpt-6-astra`；其他模型原样透传。若你的账号没有该模型，本项目不会自动改档。Windows 不支持此安装方式，Linux 仅可运行离线测试。
+
+
+```sh
+git clone https://github.com/mixx993/savetokens.git
+cd savetokens
+python3 install.py install
+```
+
+安装器查找系统或用户 Applications 目录中的 `ChatGPT.app` / `Codex.app`。其他位置可指定：
+
+```sh
+python3 install.py install --cli "/path/to/Codex.app/Contents/Resources/codex"
+```
+
+这里只是路径查找支持，不代表所有同名应用版本都兼容。安装后启动脚本使用此次安装的 Python 解释器；请保留该解释器，避免使用临时虚拟环境。安装器会保存原启动环境，遇到已有自定义 CLI 入口时停止。
+
+安装位置 `~/.codex/effort-controller/`。安装器设置当前用户 LaunchServices 启动环境中的 `CODEX_CLI_PATH` 与 `CODEX_APP_SERVER_FORCE_CLI`，并用 `~/Library/LaunchAgents/local.codex.effort-environment.plist` 在登录时恢复。原应用包和全局 `config.toml` 不改动。
+
+这两个启动入口来自 2026-09-13 本机 `/Applications/ChatGPT.app/Contents/Resources/app.asar` 的只读检查，属于当前版本实现细节，不保证未来版本兼容。原版 CLI 为 `0.154.0-alpha.6.2`。这些入口不是本项目可保证稳定的公共扩展接口。
+
+**首次安装后需等现有任务结束，再正常退出并重新打开桌面应用。安装器不强制退出应用。** 原本已经启动的服务端不会被替换。若新进程未出现 `proxy_started` 日志，不能认为桌面已接入。
+
+## 使用与检查
+
+```sh
+~/.codex/effort-controller/codex-effort status
+~/.codex/effort-controller/codex-effort preview '排查跨模块的未知错误'
+~/.codex/effort-controller/codex-effort off
+~/.codex/effort-controller/codex-effort on
+~/.codex/effort-controller/codex-effort pin 会话ID high
+~/.codex/effort-controller/codex-effort auto 会话ID
+~/.codex/effort-controller/codex-effort auto all
+~/.codex/effort-controller/codex-effort ceiling xhigh
+```
+
+开关和固定档位在下一次新一轮消息读取，无需再次重启。关闭后当前聊天保留最后已设置的档位；不会偷偷恢复另一个档位。直接在提示词单独一行写“推理强度设为high”也可以指定本轮档位。
+
+`audit.jsonl` 只记录会话 ID、档位、原因、时间和状态，不记录提示词、附件、工具参数或凭据。日志轮转上限约两份各 2 MB。
+
+- `proxy_started`：包装进程启动，不能证明某轮选档成功。
+- `selected`：已改写即将发送的请求，不能证明服务端应用了设置。
+- `accepted`：服务端接受该请求，仍不等同于完成或质量保证。
+- `server_settings`：服务端发送的实际会话设置；用于核对档位。
+- `rejected` / `skipped` / `passthrough_error`：失败或保持原请求。程序不会自动重试用户任务。
+
+## 关闭启动接入
+
+```sh
+cd savetokens  # 进入你克隆的仓库
+python3 install.py uninstall
+```
+
+恢复安装前的启动环境，卸载登录配置，保留代码与日志。重新安装会保留原配置，包括关闭状态；需要时使用 `codex-effort on` 再启用。运行中的包装程序读取到关闭设置后直接透传；应用下次启动使用原入口。
+
+## 验证
+
+```sh
+python3 -m unittest discover -v
+```
+
+模拟协议、真实原版 App Server 验证、桌面重启后的实测是三个独立证据层级。公开的验证摘要见 [docs/verification.md](docs/verification.md)。本地探针生成的 `verification.json` 含运行元数据，默认不提交。
+
+
+只检查本机服务端连接与模型目录（不发起模型推理）：
+
+```sh
+python3 live_probe.py
+```
+
+可选真实推理测试会发起两轮请求并使用账号额度：
+
+```sh
+python3 live_probe.py --live
+# 也可添加 --cli 指定原版 CLI
+```
+
+`preview` 只显示文本规则的分类，不读取会话固定档位、模型目录、图片或实际请求；不能作为桌面接入证据。
+
+## 隐私与反馈
+
+包装程序在内存中转发请求，不增加外部服务。原版 Codex 自身的网络通信继续由原应用负责。附件、代码块和常见上下文标签采用有限的文本过滤；这不是能可靠识别所有文档边界的语义隔离器。
+
+日志中仍有会话 ID 和时间等元数据。提交 Issue 前请删除这些字段及个人路径，不要上传 `audit*.jsonl`、`verification.json`、`installation.json`、凭据或完整对话。仓库不包含个人截图和实际运行日志。
+
+欢迎提供脱敏的规则误判样例、协议兼容性报告或聚焦修复。提交代码前运行上述离线测试，注明操作系统、Python 和原版 CLI 版本；不将模拟协议通过写成真实桌面验证。参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
