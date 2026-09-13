@@ -1,0 +1,71 @@
+# SaveTokens
+
+Experimental local reasoning-effort routing for the Codex desktop app on macOS.
+
+[中文说明](README.md) · [MIT License](LICENSE)
+
+A Python standard-library JSONL wrapper sits between the desktop client and its original App Server. Before a new `turn/start`, local text rules choose a reasoning effort. It reuses the original CLI and login; no additional API key or classification service is required.
+
+This is an independent community project, not affiliated with or endorsed by OpenAI. There is no measured token, cost, or quality benchmark and no promised savings. No vendor application or CLI binaries are distributed.
+
+## Scope
+
+- Defaults to `gpt-6-astra`, and only routes after `model/list` confirms supported effort levels. Other models pass through unchanged.
+- Rules map requests to `low`, `medium`, `high`, `xhigh`, or `max`; `ultra` is never selected automatically.
+- Supports per-thread pins, a configurable automatic ceiling, and an on/off switch.
+- Successful manual effort changes pin that thread. Explicit standalone prompt instructions can override a pin for one turn.
+- Changes effort fields only, including the collaboration-mode override; preserves messages, tools, permissions and server responses.
+- It does not switch effort during generation, inspect image contents, or understand the entire conversation. Known context tags and quoted blocks receive limited filtering, not a semantic security boundary.
+- The desktop launch environment hooks are undocumented implementation details. Compatibility can break after app updates.
+
+## Install
+
+Requires macOS, Python 3.9+, and a compatible installed and authenticated desktop app. If your model catalog lacks `gpt-6-astra`, automatic routing does nothing. Windows installation is unsupported.
+
+```sh
+git clone https://github.com/mixx993/savetokens.git
+cd savetokens
+python3 install.py install
+```
+
+The installer searches system/user Applications directories for ChatGPT.app or Codex.app. Use `--cli "/path/to/Codex.app/Contents/Resources/codex"` for a different location. Path detection is not a compatibility guarantee.
+
+Installs to `~/.codex/effort-controller`, sets per-user `CODEX_CLI_PATH` and `CODEX_APP_SERVER_FORCE_CLI`, and adds a login LaunchAgent. It preserves the original environment and does not modify the app bundle or global config. Keep the Python interpreter used for installation available.
+
+Wait for current work to finish, then quit and reopen the desktop app normally. The installer never force-quits it. Verify audit events; installation success alone does not prove that desktop requests use the wrapper.
+
+```sh
+~/.codex/effort-controller/codex-effort status
+~/.codex/effort-controller/codex-effort preview 'investigate a cross-module failure'
+~/.codex/effort-controller/codex-effort ceiling high
+~/.codex/effort-controller/codex-effort pin THREAD_ID high
+~/.codex/effort-controller/codex-effort auto THREAD_ID
+~/.codex/effort-controller/codex-effort off
+~/.codex/effort-controller/codex-effort on
+```
+
+`preview` is text classification only, not a check of effective pins, model support or desktop integration. To specify one turn explicitly, use a standalone line such as `reasoning effort: high`.
+
+## Uninstall integration
+
+From the cloned repository:
+
+```sh
+python3 install.py uninstall
+```
+
+Disables routing, unloads the login agent, and restores owned environment values while preserving later user changes. Code and logs remain for inspection; the original desktop entry point resumes on its next launch. Reinstalling preserves config, including an existing disabled state; use `codex-effort on` to re-enable it.
+
+## Verification and privacy
+
+```sh
+python3 -m unittest discover -v  # Offline rules, transport and mocked installation
+python3 live_probe.py          # Local App Server/catalog check; no inference
+python3 live_probe.py --live   # Optional: two real inference turns, uses account quota
+```
+
+See [verification scope](docs/verification.md). The probe creates ignored local `verification.json`; do not publish it without redaction.
+
+Audit logs omit prompts, attachments, tool arguments and credentials, but include thread IDs, times and routing metadata. `selected` means rewritten, `accepted` means accepted by the server, and `server_settings` records reported settings; none proves answer quality. Logs rotate at approximately two 2 MB files. The wrapper adds no external service; the original CLI still performs its normal network communication.
+
+Do not upload private logs, credentials or conversation screenshots in issues. See [contribution guidance](CONTRIBUTING.md).

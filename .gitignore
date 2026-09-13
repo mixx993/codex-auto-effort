@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.env
+.env.*
+config.json
+config.lock
+installation.json
+audit*.jsonl
+audit.lock
+verification.json
+codex-wrapper
+codex-effort
+enable-environment.sh
