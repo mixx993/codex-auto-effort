@@ -116,6 +116,18 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return child
     }
 
+    private func effortColor(_ effort: String) -> NSColor {
+        switch effort.lowercased() {
+        case "low": return .systemBlue
+        case "medium": return .systemTeal
+        case "high": return .systemOrange
+        case "xhigh": return .systemPurple
+        case "max": return .systemPink
+        case "ultra": return .systemRed
+        default: return .labelColor
+        }
+    }
+
     private func header(effort: String, status: String, name: String, mode: String, in menu: NSMenu) {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 116))
         func line(_ text: String, y: CGFloat, size: CGFloat, weight: NSFont.Weight, color: NSColor) {
@@ -129,7 +141,7 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             view.addSubview(field)
         }
         line("CODEX AUTO EFFORT", y: 91, size: 10, weight: .semibold, color: .secondaryLabelColor)
-        line(effort + "  ·  " + status, y: 57, size: 20, weight: .semibold, color: .labelColor)
+        line(effort + "  ·  " + status, y: 57, size: 20, weight: .semibold, color: effortColor(effort))
         line(name, y: 31, size: 12, weight: .medium, color: .labelColor)
         line(mode, y: 10, size: 11, weight: .regular, color: .secondaryLabelColor)
         let entry = NSMenuItem()
@@ -152,6 +164,7 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let name = selected.map(taskName) ?? (chosenThread == nil ? "发送新消息后显示记录" : "所选任务暂无近期记录")
         let mode = chosenThread == nil ? "跟随最近请求 · 不跟随前台窗口" : "固定查看此任务"
         item.button?.title = stale ? "?" : disabled ? "OFF" : selected == nil ? "—" : "\(short) \(marker)"
+        item.button?.contentTintColor = stale || disabled || selected == nil ? nil : effortColor(effort)
         item.button?.toolTip = "Codex Auto Effort\n\(effort.capitalized) · \(status)\n\(name)"
         item.button?.setAccessibilityLabel("Codex Auto Effort")
         item.button?.setAccessibilityValue(stale ? "监测未连接" : disabled ? "自动选档关闭" : "\(effort) · \(status)")
@@ -188,6 +201,19 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             entry.state = task["thread"] as? String == chosenThread ? .on : .off
         }
         let more = submenu("更多", in: menu)
+        let legend = submenu("档位颜色", in: more)
+        for (level, abbreviation) in [("low", "L"), ("medium", "M"), ("high", "H"), ("xhigh", "XH"), ("max", "MAX"), ("ultra", "UL")] {
+            let entry = NSMenuItem(title: "\(abbreviation)  ·  \(level.capitalized)", action: nil, keyEquivalent: "")
+            let swatch = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { [self] rect in
+                effortColor(level).setFill()
+                NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+                return true
+            }
+            swatch.isTemplate = false
+            entry.image = swatch
+            legend.addItem(entry)
+        }
+        more.addItem(.separator())
         action("重新连接", selector: #selector(reconnect), menu: more)
         action("项目说明", selector: #selector(openProject), menu: more)
         more.addItem(.separator())
