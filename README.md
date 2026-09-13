@@ -51,6 +51,33 @@ python3 install.py install --cli "/path/to/Codex.app/Contents/Resources/codex"
 
 ## 使用与检查
 
+### 菜单栏显示实际档位（可选）
+
+底部模型选择器可能一直显示手动选择的档位；它不一定同步后台改写后的请求。可安装独立的只读菜单栏应用，显示 `Effort · MEDIUM ✓` 等状态：
+
+```sh
+python3 build_menubar.py
+open "$HOME/Applications/Codex Auto Effort.app"
+```
+
+需要 macOS 13+ 和 Xcode Command Line Tools 中的 Swift 编译器。只在本机构建并进行 ad-hoc 签名，没有分发已公证二进制。生成的应用使用构建时的 Python，需保留该解释器。
+
+- `✓`：读取到服务端上下文或本次请求之后的服务端设置，点开查看来源和时间。
+- `…`：仅已选择或请求已接受，实际档位还没有确认。
+- `!`：请求被拒绝。
+- `OFF`：自动选档已关闭；历史记录不会被当成新的执行状态。
+- `?`：监测尚未连接或已停止，不表示当前模型档位。
+
+点开菜单可查看最近自动选择、请求原档位、服务端实际记录、原因和任务名称。默认跟随最近自动路由的任务，也可以固定查看一个任务；**不会自动识别当前前台聊天，也不表示该任务仍在生成**。时间显示的是记录时间。新请求到来时不会把上一轮上下文作为确认。
+
+菜单栏只读本地审计日志、任务标题/日志路径和会话中的 `turn_context` 元数据，不增加模型请求，也不保存或输出提示词。旧版日志按任务和时间核对；新版有 turn ID 时会标明对应关系。日志/数据库格式变化、缺少文件或读取窗口内没有上下文时，会保持待确认。
+
+它兼容已安装的旧包装程序，不需要为显示菜单栏重启 Codex。新版本包装日志会额外记录请求原档位与 turn ID，旧日志显示“未记录”。应用没有自动设置登录启动；退出菜单栏不会关闭后台自动选档。删除生成的 `.app` 即可移除此显示工具。构建器不会覆盖已有应用，更新时可用 `--output` 指定新路径。
+
+无界面检查：`python3 monitor.py`；连续输出：`python3 monitor.py --watch`。
+
+### 管理命令
+
 ```sh
 ~/.codex/effort-controller/codex-effort status
 ~/.codex/effort-controller/codex-effort preview '排查跨模块的未知错误'

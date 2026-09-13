@@ -51,6 +51,23 @@ The existing install directory, command name and LaunchAgent label are retained 
 
 `preview` is text classification only, not a check of effective pins, model support or desktop integration. To specify one turn explicitly, use a standalone line such as `reasoning effort: high`.
 
+## Optional menu bar status
+
+The desktop model selector may retain its manual value after the wrapper rewrites a request. A separate read-only menu bar app shows the server-recorded effort:
+
+```sh
+python3 build_menubar.py
+open "$HOME/Applications/Codex Auto Effort.app"
+```
+
+Requires macOS 13+, the Swift compiler from Xcode Command Line Tools, and the Python interpreter used to build it. This builds an ad-hoc-signed local app, not a notarized binary distribution.
+
+`✓` means a server context/settings record was found; `…` means selected or accepted but unconfirmed; `!` means rejected; `OFF` means routing disabled; `?` means monitoring unavailable. The menu shows evidence source and time, task name, requested/original effort and rule reason. It follows the most recent routed task or a manually selected task, not the foreground chat, and does not imply a turn is still running.
+
+The helper reads local audit records, task titles/rollout paths and `turn_context` metadata. It does not emit prompts, change routing, or make model requests. Legacy logs use task/time correlation; newer logs include turn IDs. Missing/changed data leaves the result unconfirmed. Startup and catch-up session reads are limited to 4 MiB; older contexts beyond that window may be unavailable.
+
+Works with the older installed wrapper without restarting Codex. No login item is installed. Quitting the menu app leaves routing running; delete its `.app` to remove the display. The builder refuses to overwrite an existing app; use `--output` for a new destination. For headless status use `python3 monitor.py` or add `--watch`.
+
 ## Uninstall integration
 
 From the cloned repository:

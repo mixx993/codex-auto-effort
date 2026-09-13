@@ -178,7 +178,8 @@ class Router:
         result["params"]["effort"] = effort
         if mode:
             result["params"]["collaborationMode"]["settings"]["reasoning_effort"] = effort
-        self.decisions[ident] = {"thread": thread, "effort": effort, "reason": reason}
+        original = mode.get("reasoning_effort") if mode else p.get("effort", self.threads.get(thread, {}).get("effort"))
+        self.decisions[ident] = {"thread": thread, "effort": effort, "reason": reason, "original_effort": original, "model": model, "request_id": ident}
         self.audit({"event": "selected", **self.decisions[ident]})
         return result
 
@@ -213,6 +214,9 @@ class Router:
             accepted = "error" not in message and isinstance(result, dict)
             if accepted:
                 self.previous[decision["thread"]] = decision["effort"]
+                turn_id = result.get("turn", {}).get("id")
+                if isinstance(turn_id, str):
+                    decision["turn_id"] = turn_id
             self.audit({"event": "accepted" if accepted else "rejected", **decision})
         if not isinstance(result, dict) or "error" in message:
             return

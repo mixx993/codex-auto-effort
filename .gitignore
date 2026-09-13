@@ -13,3 +13,4 @@ verification.json
 codex-wrapper
 codex-effort
 enable-environment.sh
+*.app/
