@@ -6,7 +6,7 @@
 
 | 检查 | 结果 | 能证明什么 |
 | --- | --- | --- |
-| `python3 -m unittest discover -v` | 47 项通过 | 规则、协议字段、子进程传输和模拟安装/卸载行为 |
+| `python3 -m unittest discover -v` | 49 项通过 | 规则、协议字段、子进程传输和模拟安装/卸载行为 |
 | 安装器路径含空格、启动脚本执行 | 通过 | 在临时目录运行生成的管理命令；不会改动真实 LaunchServices |
 | 缺失 CLI、非 macOS 安装 | 通过 | 在写启动环境之前停止 |
 | `python3 live_probe.py --live --model gpt-6-astra` | 通过 | 新控制器经原版服务端完成两轮真实推理：medium → low、low → high；服务端报告的实际档位一致 |

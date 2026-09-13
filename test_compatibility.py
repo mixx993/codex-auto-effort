@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from controller import DEFAULTS, Router, classify, read_config
+from controller import DEFAULTS, Router, classify, is_stdio_server, read_config
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -52,6 +52,17 @@ class CompatibilityTests(unittest.TestCase):
         del request["id"]
         self.assertIs(self.router.outgoing(request), request)
         self.assertFalse(self.router.pending)
+
+    def test_second_start_before_server_notification_is_not_rerouted(self):
+        self.router.outgoing(self.request())
+        second = self.request("翻译")
+        second["id"] = 2
+        self.assertIs(self.router.outgoing(second), second)
+
+    def test_app_server_argument_is_not_mistaken_for_subcommand(self):
+        for args in (["exec", "app-server"], ["--config", "app-server", "exec", "hello"]):
+            self.assertFalse(is_stdio_server(args))
+        self.assertTrue(is_stdio_server(["--config=a=1", "app-server", "--listen=stdio://"]))
 
     def test_unknown_methods_do_not_accumulate_pending_metadata(self):
         for i in range(500):

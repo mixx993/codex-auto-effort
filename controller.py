@@ -141,7 +141,8 @@ class Router:
                 self.pending[ident] = (method, thread, effort)
         if method != "turn/start" or not thread or p.get("toolOutput") is not None:
             return message
-        if thread in self.active:
+        starting = any(key != ident and value[:2] == ("turn/start", thread) for key, value in self.pending.items())
+        if thread in self.active or starting:
             self.audit({"event": "skipped", "thread": thread, "reason": "active_turn_steering"})
             return message
         inputs = p.get("input")
@@ -372,9 +373,19 @@ def proxy(args, real, root=ROOT):
 
 
 def is_stdio_server(args):
-    if "app-server" not in args:
+    # Find the command, not an arbitrary argument such as `exec app-server`.
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-c", "--config", "--enable", "--disable"):
+            index += 2
+        elif arg.startswith(("--config=", "--enable=", "--disable=")):
+            index += 1
+        else:
+            break
+    if index >= len(args) or args[index] != "app-server":
         return False
-    tail = args[args.index("app-server") + 1:]
+    tail = args[index + 1:]
     if any(x in tail for x in ("proxy", "daemon", "generate-ts", "generate-json-schema", "--help", "-h")):
         return False
     for i, arg in enumerate(tail):
