@@ -1,7 +1,8 @@
 import AppKit
 
-final class EffortMenu: NSObject, NSApplicationDelegate {
+final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
+    private var menuIsOpen = false
     private var worker: Process?
     private var pipe: Pipe?
     private var buffer = Data()
@@ -88,74 +89,118 @@ final class EffortMenu: NSObject, NSApplicationDelegate {
         return formatter.string(from: date)
     }
 
+    private func compact(_ text: String, width: CGFloat = 270) -> String {
+        let font = NSFont.menuFont(ofSize: 0)
+        let clean = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+        if (clean as NSString).size(withAttributes: [.font: font]).width <= width { return clean }
+        var result = clean
+        while !result.isEmpty && ((result + "…") as NSString).size(withAttributes: [.font: font]).width > width {
+            result.removeLast()
+        }
+        return result + "…"
+    }
+
+    private func taskName(_ task: [String: Any]) -> String {
+        let name = task["title"] as? String ?? ""
+        if name.isEmpty || name.contains("# Files mentioned by the user:") {
+            return "附件任务 · " + String((task["thread"] as? String ?? "未知").suffix(4))
+        }
+        return name
+    }
+
+    private func submenu(_ title: String, in menu: NSMenu) -> NSMenu {
+        let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let child = NSMenu()
+        entry.submenu = child
+        menu.addItem(entry)
+        return child
+    }
+
+    private func header(effort: String, status: String, name: String, mode: String, in menu: NSMenu) {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 116))
+        func line(_ text: String, y: CGFloat, size: CGFloat, weight: NSFont.Weight, color: NSColor) {
+            let field = NSTextField(labelWithString: text)
+            field.font = .systemFont(ofSize: size, weight: weight)
+            field.textColor = color
+            field.frame = NSRect(x: 16, y: y, width: 268, height: size + 6)
+            field.lineBreakMode = .byTruncatingTail
+            field.maximumNumberOfLines = 1
+            field.toolTip = text
+            view.addSubview(field)
+        }
+        line("CODEX AUTO EFFORT", y: 91, size: 10, weight: .semibold, color: .secondaryLabelColor)
+        line(effort + "  ·  " + status, y: 57, size: 20, weight: .semibold, color: .labelColor)
+        line(name, y: 31, size: 12, weight: .medium, color: .labelColor)
+        line(mode, y: 10, size: 11, weight: .regular, color: .secondaryLabelColor)
+        let entry = NSMenuItem()
+        entry.view = view
+        menu.addItem(entry)
+    }
+
     private func refresh() {
         let tasks = snapshot["tasks"] as? [[String: Any]] ?? []
         let selected = chosenThread == nil ? tasks.first : tasks.first { $0["thread"] as? String == chosenThread }
         let stale = Date().timeIntervalSince(lastUpdate) > 5
         let disabled = snapshot["enabled"] as? Bool == false
+        let actual = selected?["actual"] as? String
+        let requested = selected?["requested"] as? String ?? "—"
+        let phase = selected?["phase"] as? String ?? "selected"
+        let effort = actual ?? requested
+        let short = ["low": "L", "medium": "M", "high": "H", "xhigh": "XH", "max": "MAX", "ultra": "UL"][effort] ?? compact(effort.uppercased(), width: 55)
+        let status = actual != nil ? "已确认" : phase == "rejected" ? "已拒绝" : "待确认"
+        let marker = actual != nil ? "✓" : phase == "rejected" ? "!" : "…"
+        let name = selected.map(taskName) ?? (chosenThread == nil ? "发送新消息后显示记录" : "所选任务暂无近期记录")
+        let mode = chosenThread == nil ? "跟随最近请求 · 不跟随前台窗口" : "固定查看此任务"
+        item.button?.title = stale ? "?" : disabled ? "OFF" : selected == nil ? "—" : "\(short) \(marker)"
+        item.button?.toolTip = "Codex Auto Effort\n\(effort.capitalized) · \(status)\n\(name)"
+        item.button?.setAccessibilityLabel("Codex Auto Effort")
+        item.button?.setAccessibilityValue(stale ? "监测未连接" : disabled ? "自动选档关闭" : "\(effort) · \(status)")
+        // Keep the open menu stable while the background feed updates.
+        guard !menuIsOpen else { return }
         let menu = NSMenu()
-        label("Codex Auto Effort", menu)
-        label(chosenThread == nil ? "跟随最近自动请求 · 非当前窗口识别" : "固定查看所选任务", menu)
-        var title = "Effort · —"
-        var tip = "等待本地监测记录"
-        if stale {
-            title = "Effort · ?"
-            tip = "监测尚未连接或已停止；不代表模型档位"
-            label(tip, menu)
-        } else if disabled {
-            title = "Effort · OFF"
-            tip = "自动选档已关闭，以下为历史记录"
-            label(tip, menu)
-        }
-        if let task = selected {
-            let actual = task["actual"] as? String
-            let requested = task["requested"] as? String ?? "未知"
-            let phase = task["phase"] as? String ?? "selected"
-            let name = (task["title"] as? String ?? "任务").replacingOccurrences(of: "\n", with: " ")
-            let status: String
-            if actual != nil {
-                status = "服务端记录已确认"
-            } else if phase == "rejected" {
-                status = "请求被拒绝 · 不能认定已采用"
-            } else if phase == "accepted" {
-                status = "请求已接受 · 实际档位待确认"
-            } else {
-                status = "已选择 · 等待服务端"
-            }
-            if !stale && !disabled {
-                title = "Effort · " + (actual ?? requested).uppercased() + (actual != nil ? " ✓" : phase == "rejected" ? " !" : " …")
-                tip = "\(name)\n\(status)\n最近记录：\(timeLabel(task["actual_time"] ?? task["time"]))"
-            }
-            menu.addItem(.separator())
-            label(String(name.prefix(55)), menu)
-            label("实际记录：\(actual ?? "待确认")", menu)
-            label("状态：\(status)", menu)
-            label("来源：\(task["source"] as? String ?? "本地请求日志")", menu)
-            label("记录时间：\(timeLabel(task["actual_time"]))", menu)
-            label(task["association"] as? String ?? "不会沿用上一轮的档位作为确认", menu)
-            menu.addItem(.separator())
-            label("最近自动选择：\(requested) · \(timeLabel(task["time"]))", menu)
-            label("请求原档位：\(task["original"] as? String ?? "旧日志未记录")", menu)
-            label("模型：\(task["model"] as? String ?? "待确认")", menu)
-            label("原因：\(task["reason"] as? String ?? "未知")", menu)
-        } else if !stale && !disabled {
-            label(chosenThread == nil ? "尚无自动路由记录，发送一轮新消息后查看" : "所选任务不在最近 12 个任务中", menu)
-        }
-        item.button?.title = title
-        item.button?.toolTip = tip
+        menu.delegate = self
+        header(effort: stale ? "未连接" : disabled ? "已关闭" : selected == nil ? "等待记录" : effort.capitalized,
+               status: stale ? "监测暂停" : disabled ? "自动选档" : selected == nil ? "就绪" : status,
+               name: name, mode: mode, in: menu)
         menu.addItem(.separator())
-        let automatic = action("跟随最近自动请求", selector: #selector(selectTask(_:)), menu: menu)
+        if let task = selected {
+            let details = submenu("详情", in: menu)
+            if stale || disabled { label("以下为历史记录", details) }
+            label("实际档位：\(actual ?? "待确认")", details)
+            label("记录时间：\(timeLabel(task["actual_time"]))", details)
+            label(compact("来源：\(task["source"] as? String ?? "本地请求日志")"), details)
+            label(compact(task["association"] as? String ?? "等待本轮服务端记录"), details)
+            details.addItem(.separator())
+            label("自动选择：\(requested) · \(timeLabel(task["time"]))", details)
+            label("原档位：\(task["original"] as? String ?? "未记录")", details)
+            label(compact("模型：\(task["model"] as? String ?? "待确认")"), details)
+            label(compact("原因：\(task["reason"] as? String ?? "未知")"), details)
+        }
+        let chooser = submenu("查看任务", in: menu)
+        let automatic = action("跟随最近请求", selector: #selector(selectTask(_:)), menu: chooser)
         automatic.state = chosenThread == nil ? .on : .off
+        if !tasks.isEmpty { chooser.addItem(.separator()) }
         for task in tasks {
-            let entry = action(String((task["title"] as? String ?? "任务").prefix(45)), selector: #selector(selectTask(_:)), menu: menu)
+            let fullName = taskName(task)
+            let entry = action(compact(fullName), selector: #selector(selectTask(_:)), menu: chooser)
+            entry.toolTip = fullName
             entry.representedObject = task["thread"]
             entry.state = task["thread"] as? String == chosenThread ? .on : .off
         }
-        menu.addItem(.separator())
-        action("重新连接监测", selector: #selector(reconnect), menu: menu)
-        action("打开项目说明", selector: #selector(openProject), menu: menu)
-        action("退出状态栏（自动选档继续工作）", selector: #selector(quit), menu: menu)
+        let more = submenu("更多", in: menu)
+        action("重新连接", selector: #selector(reconnect), menu: more)
+        action("项目说明", selector: #selector(openProject), menu: more)
+        more.addItem(.separator())
+        let quitItem = action("退出菜单栏", selector: #selector(quit), menu: more)
+        quitItem.toolTip = "后台自动选档继续工作"
         item.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        DispatchQueue.main.async { [weak self] in self?.refresh() }
     }
 
     @objc private func selectTask(_ sender: NSMenuItem) {

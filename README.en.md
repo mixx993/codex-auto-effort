@@ -53,7 +53,7 @@ The existing install directory, command name and LaunchAgent label are retained 
 
 ## Optional menu bar status
 
-The desktop model selector may retain its manual value after the wrapper rewrites a request. A separate read-only menu bar app shows the server-recorded effort:
+The desktop model selector may retain its manual value after the wrapper rewrites a request. A separate read-only menu bar app shows compact status such as `M ✓` (L / M / H / XH / MAX / UL):
 
 ```sh
 python3 build_menubar.py
@@ -62,7 +62,7 @@ open "$HOME/Applications/Codex Auto Effort.app"
 
 Requires macOS 13+, the Swift compiler from Xcode Command Line Tools, and the Python interpreter used to build it. This builds an ad-hoc-signed local app, not a notarized binary distribution.
 
-`✓` means a server context/settings record was found; `…` means selected or accepted but unconfirmed; `!` means rejected; `OFF` means routing disabled; `?` means monitoring unavailable. The menu shows evidence source and time, task name, requested/original effort and rule reason. It follows the most recent routed task or a manually selected task, not the foreground chat, and does not imply a turn is still running.
+`✓` means a server context/settings record was found; `…` means selected or accepted but unconfirmed; `!` means rejected; `OFF` means routing disabled; `?` means monitoring unavailable. The compact menu highlights effort, confirmation and a single-line task title. Details and task selection live in submenus. It follows the most recent routed task or a manually selected task, not the foreground chat, and does not imply a turn is still running.
 
 The helper reads local audit records, task titles/rollout paths and `turn_context` metadata. It does not emit prompts, change routing, or make model requests. Legacy logs use task/time correlation; newer logs include turn IDs. Missing/changed data leaves the result unconfirmed. Startup and catch-up session reads are limited to 4 MiB; older contexts beyond that window may be unavailable.
 
