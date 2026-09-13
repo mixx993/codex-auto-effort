@@ -128,6 +128,23 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func effortImage(_ text: String, effort: String) -> NSImage {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
+            .foregroundColor: effortColor(effort),
+        ]
+        let label = NSAttributedString(string: text, attributes: attributes)
+        let size = label.size()
+        let image = NSImage(size: NSSize(width: ceil(size.width) + 2, height: 22), flipped: false) { _ in
+            label.draw(at: NSPoint(x: 1, y: floor((22 - size.height) / 2)))
+            return true
+        }
+        // Original pixels retain their color in the macOS menu bar.
+        image.isTemplate = false
+        image.accessibilityDescription = text
+        return image
+    }
+
     private func header(effort: String, status: String, name: String, mode: String, in menu: NSMenu) {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 116))
         func line(_ text: String, y: CGFloat, size: CGFloat, weight: NSFont.Weight, color: NSColor) {
@@ -163,8 +180,11 @@ final class EffortMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let marker = actual != nil ? "✓" : phase == "rejected" ? "!" : "…"
         let name = selected.map(taskName) ?? (chosenThread == nil ? "发送新消息后显示记录" : "所选任务暂无近期记录")
         let mode = chosenThread == nil ? "跟随最近请求 · 不跟随前台窗口" : "固定查看此任务"
-        item.button?.title = stale ? "?" : disabled ? "OFF" : selected == nil ? "—" : "\(short) \(marker)"
-        item.button?.contentTintColor = stale || disabled || selected == nil ? nil : effortColor(effort)
+        let hasEffort = !stale && !disabled && selected != nil
+        item.button?.contentTintColor = nil
+        item.button?.image = hasEffort ? effortImage(short, effort: effort) : nil
+        item.button?.imagePosition = .imageLeft
+        item.button?.title = stale ? "?" : disabled ? "OFF" : selected == nil ? "—" : " " + marker
         item.button?.toolTip = "Codex Auto Effort\n\(effort.capitalized) · \(status)\n\(name)"
         item.button?.setAccessibilityLabel("Codex Auto Effort")
         item.button?.setAccessibilityValue(stale ? "监测未连接" : disabled ? "自动选档关闭" : "\(effort) · \(status)")
